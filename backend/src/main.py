@@ -2,6 +2,7 @@ from fastapi import FastAPI, File, UploadFile
 import os
 from src.pdf_parser import extract_text_and_images
 from src.text_chunker import chunk_text
+from src.vector_store import embed_and_store
 
 app = FastAPI()
 
@@ -41,3 +42,18 @@ async def chunk_pdf(file: UploadFile = File(...)):
     chunks = chunk_text(page_data, max_sentences=5)
 
     return {"num_chunks": len(chunks), "sample_chunk": chunks[0]}
+
+@app.post("/index-pdf/")
+async def index_pdf(file: UploadFile = File(...)):
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(file_path, "wb") as f:
+        f.write(await file.read())
+
+    # Extract + chunk
+    page_data = extract_text_and_images(file_path)
+    chunks = chunk_text(page_data)
+
+    # Embed + store
+    count = embed_and_store(chunks)
+
+    return {"status": "Indexed successfully", "chunks_stored": count}
