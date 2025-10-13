@@ -131,12 +131,18 @@ __pypackages__/
 celerybeat-schedule
 celerybeat.pid
 
+# Temporary files and generated images
+temp_*
+backend/highlighted_images/
+*.png
+*.jpg
+*.jpeg
+
 # SageMath parsed files
 *.sage.py
 
 # Environments
 .env
-.envrc
 .venv
 env/
 venv/
@@ -207,3 +213,4 @@ marimo/_lsp/
 __marimo__/
 
 backend/uploads/
+frontend/node_modules

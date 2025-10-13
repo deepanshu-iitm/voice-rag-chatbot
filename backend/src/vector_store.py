@@ -13,16 +13,16 @@ index_name = "ai-docs"
 if index_name not in [i["name"] for i in pc.list_indexes()]:
     pc.create_index(
         name=index_name,
-        dimension=768, 
+        dimension=384, 
         metric="cosine",
         spec=ServerlessSpec(cloud="aws", region="us-east-1")
     )
 
 index = pc.Index(index_name)
 
-model = SentenceTransformer("all-mpnet-base-v2")
+model = SentenceTransformer("all-MiniLM-L6-v2")
 
-def embed_and_store(chunks):
+def embed_and_store(chunks, filename=None):
     """
     Takes list of chunks [{"text":..., "page":..., "images":...}, ...]
     Creates embeddings and uploads to Pinecone.
@@ -32,14 +32,18 @@ def embed_and_store(chunks):
 
     vectors = []
     for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+        metadata = {
+            "page": chunk["page"],
+            "text": chunk["text"],
+            "images": chunk["images"]
+        }
+        if filename:
+            metadata["filename"] = filename
+            
         vectors.append({
-            "id": f"chunk-{i}",
+            "id": f"chunk-{i}-{filename}" if filename else f"chunk-{i}",
             "values": emb,
-            "metadata": {
-                "page": chunk["page"],
-                "text": chunk["text"],
-                "images": chunk["images"]
-            }
+            "metadata": metadata
         })
 
     index.upsert(vectors)
