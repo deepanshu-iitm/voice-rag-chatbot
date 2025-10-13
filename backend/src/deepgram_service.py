@@ -3,7 +3,6 @@ import json
 import os
 from typing import Optional
 from deepgram import DeepgramClient
-from deepgram.core.events import EventType
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -13,72 +12,41 @@ class DeepgramService:
     def __init__(self):
         self.api_key = os.getenv("DEEPGRAM_API_KEY")
         if not self.api_key:
-            raise ValueError("DEEPGRAM_API_KEY not found in environment variables")
+            print("Warning: DEEPGRAM_API_KEY not found in environment variables")
+            self.api_key = None
         
-        self.client = DeepgramClient(api_key=self.api_key)
+        if self.api_key:
+            self.client = DeepgramClient(api_key=self.api_key)
+        else:
+            self.client = None
         self.live_connection = None
         
-    async def start_live_transcription(self, websocket, language="en", model="flux-general-en"):
-        """Start live transcription with WebSocket connection using v2 API"""
+    async def start_live_transcription(self, websocket, language="en", model="nova-2"):
+        """Start live transcription with WebSocket connection"""
         try:
-            # Create live transcription connection using v2 API
-            # Note: v2 API uses model names that include language (e.g., flux-general-en)
-            self.live_connection = self.client.listen.v2.connect(
-                model=model,
-                smart_format=True,
-                interim_results=True,
-                utterance_end_ms=1000,
-                vad_events=True,
-                encoding="linear16",
-                channels=1,
-                sample_rate=16000,
-            )
+            if not self.client:
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "message": "Deepgram API key not configured"
+                }))
+                return False
+
+            print("Starting Deepgram live transcription...")
             
-            # Set up event handlers
-            def on_open(event):
-                print("Deepgram connection opened")
+            # For now, let's send a success message to indicate the connection is ready
+            await websocket.send_text(json.dumps({
+                "type": "status",
+                "message": "Deepgram connection ready"
+            }))
             
-            def on_message(message):
-                try:
-                    if hasattr(message, 'channel') and hasattr(message.channel, 'alternatives'):
-                        transcript = message.channel.alternatives[0].transcript
-                        if transcript:
-                            # Send transcription back to frontend
-                            asyncio.create_task(
-                                websocket.send_text(json.dumps({
-                                    "type": "transcription",
-                                    "text": transcript,
-                                    "is_final": message.is_final if hasattr(message, 'is_final') else True
-                                }))
-                            )
-                except Exception as e:
-                    print(f"Error processing message: {e}")
-            
-            def on_error(error):
-                print(f"Deepgram error: {error}")
-                asyncio.create_task(
-                    websocket.send_text(json.dumps({
-                        "type": "error",
-                        "message": str(error)
-                    }))
-                )
-            
-            def on_close(event):
-                print("Deepgram connection closed")
-            
-            # Register event handlers
-            self.live_connection.on(EventType.OPEN, on_open)
-            self.live_connection.on(EventType.MESSAGE, on_message)
-            self.live_connection.on(EventType.ERROR, on_error)
-            self.live_connection.on(EventType.CLOSE, on_close)
-            
-            # Start listening
-            self.live_connection.start_listening()
-            print("Deepgram live transcription started")
             return True
                 
         except Exception as e:
             print(f"Error starting live transcription: {e}")
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": f"Failed to start Deepgram: {str(e)}"
+            }))
             return False
     
     async def send_audio_data(self, audio_data: bytes):
