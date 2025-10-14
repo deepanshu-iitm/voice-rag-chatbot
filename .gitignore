@@ -142,7 +142,6 @@ backend/highlighted_images/
 *.sage.py
 
 # Environments
-.env
 .venv
 env/
 venv/
@@ -215,3 +214,5 @@ __marimo__/
 backend/uploads/
 frontend/node_modules/
 frontend/.next/
+config.bat
+node_modules
