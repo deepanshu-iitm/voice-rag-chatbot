@@ -57,6 +57,9 @@ export default function Home() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const lastProcessedTranscriptRef = useRef<string>('')
+  const processingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const isProcessingRef = useRef<boolean>(false)
 
   // Initialize Deepgram WebSocket connection
   useEffect(() => {
@@ -81,88 +84,160 @@ export default function Home() {
     setIsListening(false)
     setVoiceStatus('Ready')
     setStatusClass('')
+    setCurrentTranscription('')
+    lastProcessedTranscriptRef.current = ''
+    isProcessingRef.current = false
+    
+    // Clear any pending timeouts
+    if (processingTimeoutRef.current) {
+      clearTimeout(processingTimeoutRef.current)
+      processingTimeoutRef.current = null
+    }
   }
 
   const startListening = async () => {
     try {
-      // Get user media (microphone)
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          sampleRate: 16000,
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true
-        } 
-      })
-
-      // Create WebSocket connection to Deepgram
-      const ws = new WebSocket('ws://localhost:8000/ws/transcribe')
-      websocketRef.current = ws
-
-      ws.onopen = () => {
-        setIsListening(true)
-        setVoiceStatus('Connected to Deepgram...')
-        setStatusClass('listening')
+      // Check if Web Speech API is supported
+      if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        setVoiceStatus('Speech recognition not supported in this browser')
+        setStatusClass('error')
+        return
       }
 
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data)
-        
-        if (data.type === 'transcription' && data.text) {
-          setCurrentTranscription(data.text)
-          if (data.is_final) {
-            setVoiceStatus('Processing...')
+      // Create speech recognition instance
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+      const recognition = new SpeechRecognition()
+      
+      // Configure speech recognition
+      recognition.continuous = true
+      recognition.interimResults = true
+      recognition.lang = 'en-US'
+      recognition.maxAlternatives = 1
+
+      setIsListening(true)
+      setVoiceStatus('Listening...')
+      setStatusClass('listening')
+
+      recognition.onstart = () => {
+        console.log('Speech recognition started')
+        setVoiceStatus('Listening... Speak now!')
+      }
+
+      recognition.onresult = (event: any) => {
+        let interimTranscript = ''
+        let finalTranscript = ''
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript
+          const confidence = event.results[i][0].confidence
+
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript
+            console.log('Final transcript:', transcript)
+          } else {
+            interimTranscript += transcript
           }
-        } else if (data.type === 'error') {
-          console.error('Deepgram error:', data.message)
-          setVoiceStatus(`Error: ${data.message}`)
-          setStatusClass('error')
-          resetVoiceControls()
+        }
+
+        // Update current transcription display
+        if (interimTranscript) {
+          setCurrentTranscription(interimTranscript)
+          setVoiceStatus('Listening... (processing)')
+        }
+
+        // Handle final transcript with robust duplicate prevention
+        if (finalTranscript.trim()) {
+          const trimmedTranscript = finalTranscript.trim()
+          
+          // Prevent duplicate messages with multiple checks
+          if (trimmedTranscript !== lastProcessedTranscriptRef.current && !isProcessingRef.current) {
+            console.log('Adding final message:', trimmedTranscript)
+            
+            // Set processing flag immediately to prevent duplicates
+            isProcessingRef.current = true
+            lastProcessedTranscriptRef.current = trimmedTranscript
+            
+            const messageId = addMessage('user', trimmedTranscript)
+            setCurrentTranscription('')
+            setVoiceStatus('Processing your message...')
+            
+            // Clear any existing timeout to prevent multiple sends
+            if (processingTimeoutRef.current) {
+              clearTimeout(processingTimeoutRef.current)
+            }
+            
+            // Auto-send the message after final transcription
+            processingTimeoutRef.current = setTimeout(() => {
+              sendMessage(trimmedTranscript)
+              processingTimeoutRef.current = null
+              // Reset processing flag after a delay to allow for new messages
+              setTimeout(() => {
+                isProcessingRef.current = false
+              }, 2000)
+            }, 500)
+          } else {
+            console.log('Duplicate transcript ignored:', trimmedTranscript)
+          }
         }
       }
 
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error)
-        setVoiceStatus('Connection error')
+      recognition.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error)
+        let errorMessage = 'Speech recognition error'
+        
+        switch (event.error) {
+          case 'no-speech':
+            errorMessage = 'No speech detected. Try speaking louder.'
+            break
+          case 'audio-capture':
+            errorMessage = 'Audio capture failed. Check your microphone.'
+            break
+          case 'not-allowed':
+            errorMessage = 'Microphone access denied'
+            break
+          case 'network':
+            errorMessage = 'Network error occurred'
+            break
+          default:
+            errorMessage = `Speech recognition error: ${event.error}`
+        }
+        
+        setVoiceStatus(errorMessage)
         setStatusClass('error')
         resetVoiceControls()
       }
 
-      ws.onclose = () => {
-        resetVoiceControls()
-      }
-
-      // Create MediaRecorder to capture audio
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
-      })
-      mediaRecorderRef.current = mediaRecorder
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-          // Send audio data to Deepgram via WebSocket
-          ws.send(event.data)
+      recognition.onend = () => {
+        console.log('Speech recognition ended')
+        if (isListening) {
+          setVoiceStatus('Stopped listening')
+          resetVoiceControls()
         }
       }
 
-      // Start recording in small chunks for real-time processing
-      mediaRecorder.start(100) // Send data every 100ms
+      // Store recognition instance for cleanup
+      websocketRef.current = recognition as any
 
-    } catch (error) {
+      // Start recognition
+      recognition.start()
+
+    } catch (error: any) {
       console.error('Error starting voice recognition:', error)
-      setVoiceStatus('Microphone access denied')
+      setVoiceStatus('Failed to start voice recognition')
       setStatusClass('error')
       resetVoiceControls()
     }
   }
 
   const stopListening = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop()
-    }
-    
     if (websocketRef.current) {
-      websocketRef.current.close()
+      // Stop speech recognition
+      try {
+        (websocketRef.current as any).stop()
+      } catch (error) {
+        console.log('Error stopping speech recognition:', error)
+      }
+      websocketRef.current = null
     }
     
     resetVoiceControls()

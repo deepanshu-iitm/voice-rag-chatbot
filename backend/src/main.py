@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Form, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import os
@@ -12,7 +12,7 @@ from src.pdf_parser import extract_text_and_images
 from src.text_chunker import chunk_text
 from src.vector_store import embed_and_store
 from src.rag_retriever import retrieve_context, generate_answer, hybrid_search_and_answer
-from src.deepgram_service import deepgram_service
+# Deepgram service removed - using Web Speech API in frontend
 
 app = FastAPI()
 
@@ -150,14 +150,44 @@ async def get_pdf_page_highlighted(filename: str, page_num: int, highlight_text:
         
         # If highlight text is provided, search and highlight it
         if highlight_text.strip():
-            # Search for the text on the page
-            text_instances = page.search_for(highlight_text.strip())
+            search_text = highlight_text.strip()
             
-            # Highlight each instance with yellow
+            # Try multiple search strategies for better accuracy
+            text_instances = []
+            
+            # Strategy 1: Exact phrase search
+            exact_matches = page.search_for(search_text)
+            text_instances.extend(exact_matches)
+            
+            # Strategy 2: If no exact matches and text is long, try first few words
+            if not exact_matches and len(search_text.split()) > 3:
+                first_words = ' '.join(search_text.split()[:3])
+                partial_matches = page.search_for(first_words)
+                text_instances.extend(partial_matches)
+            
+            # Strategy 3: If still no matches, try individual significant words (>3 chars)
+            if not text_instances:
+                words = [word for word in search_text.split() if len(word) > 3]
+                for word in words[:2]:  # Only try first 2 significant words
+                    word_matches = page.search_for(word)
+                    text_instances.extend(word_matches)
+            
+            # Remove duplicates by converting to set of tuples and back
+            unique_instances = []
+            seen_rects = set()
             for inst in text_instances:
+                rect_tuple = (inst.x0, inst.y0, inst.x1, inst.y1)
+                if rect_tuple not in seen_rects:
+                    seen_rects.add(rect_tuple)
+                    unique_instances.append(inst)
+            
+            # Highlight each unique instance with yellow
+            for inst in unique_instances:
                 highlight = page.add_highlight_annot(inst)
                 highlight.set_colors(stroke=[1, 1, 0])  # Yellow highlight
                 highlight.update()
+                
+            print(f"Highlighted {len(unique_instances)} instances of text: '{search_text}'")
         
         # Render page as image with highlights
         mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better quality
@@ -179,74 +209,3 @@ async def get_pdf_page_highlighted(filename: str, page_num: int, highlight_text:
     except Exception as e:
         return {"error": f"Failed to get highlighted PDF page: {str(e)}"}
 
-@app.websocket("/ws/transcribe")
-async def websocket_transcribe(websocket: WebSocket):
-    """WebSocket endpoint for real-time Deepgram transcription"""
-    await websocket.accept()
-    
-    try:
-        # Start Deepgram live transcription
-        success = await deepgram_service.start_live_transcription(websocket)
-        
-        if not success:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": "Failed to start Deepgram transcription"
-            }))
-            return
-        
-        # Listen for audio data from frontend
-        while True:
-            try:
-                # Receive audio data from frontend
-                data = await websocket.receive_bytes()
-                
-                # Send audio data to Deepgram
-                await deepgram_service.send_audio_data(data)
-                
-            except WebSocketDisconnect:
-                print("WebSocket disconnected")
-                break
-            except Exception as e:
-                print(f"WebSocket error: {e}")
-                await websocket.send_text(json.dumps({
-                    "type": "error",
-                    "message": str(e)
-                }))
-                break
-    
-    except Exception as e:
-        print(f"WebSocket connection error: {e}")
-    
-    finally:
-        # Clean up Deepgram connection
-        await deepgram_service.stop_live_transcription()
-
-@app.post("/transcribe-audio/")
-async def transcribe_audio_file(file: UploadFile = File(...)):
-    """Transcribe uploaded audio file using Deepgram"""
-    try:
-        # Save uploaded audio file temporarily
-        temp_audio_path = f"temp_audio_{file.filename}"
-        with open(temp_audio_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
-        
-        # Transcribe using Deepgram
-        result = await deepgram_service.transcribe_file(temp_audio_path)
-        
-        # Clean up temporary file
-        if os.path.exists(temp_audio_path):
-            os.remove(temp_audio_path)
-        
-        if result:
-            return {
-                "transcript": result["transcript"],
-                "confidence": result["confidence"],
-                "success": True
-            }
-        else:
-            return {"error": "Failed to transcribe audio", "success": False}
-            
-    except Exception as e:
-        return {"error": f"Audio transcription failed: {str(e)}", "success": False}
