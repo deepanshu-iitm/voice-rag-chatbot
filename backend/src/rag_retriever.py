@@ -10,7 +10,7 @@ index = pc.Index("ai-docs")
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
 # genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-genai.configure(api_key="AIzaSyAcEahNIbKQOT2ZooPfd8uJJSIskh6EN4U")
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 def retrieve_context(query, top_k=5, document_filter=None, min_score=0.3):
     """Search Pinecone for similar chunks, optionally filtered by document"""
